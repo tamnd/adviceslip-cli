@@ -42,7 +42,7 @@ Get a random piece of advice, look up a slip by ID, or search by keyword.`,
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	kit.Handle(app, kit.OpMeta{Name: "advice", Group: "read", Single: true,
+	kit.Handle(app, kit.OpMeta{Name: "random", Group: "read", Single: true,
 		Summary: "Get a random piece of advice"}, adviceOp)
 
 	kit.Handle(app, kit.OpMeta{Name: "get", Group: "read", Single: true,
