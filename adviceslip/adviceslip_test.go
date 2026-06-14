@@ -1,57 +1,133 @@
-package adviceslip
+package adviceslip_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/tamnd/adviceslip-cli/adviceslip"
 )
 
-func TestGet(t *testing.T) {
+func newTestClient(ts *httptest.Server) *adviceslip.Client {
+	cfg := adviceslip.DefaultConfig()
+	cfg.BaseURL = ts.URL
+	cfg.Rate = 0
+	return adviceslip.NewClient(cfg)
+}
+
+const mockRandomResponse = `{"slip":{"id":42,"advice":"Do not take life too seriously. You will never get out of it alive."}}`
+
+const mockSearchResponse = `{"slips":[{"id":1,"advice":"Remember to be kind."},{"id":2,"advice":"Stay positive always."}]}`
+
+const mockNoResultsResponse = `{"message":{"type":"warning","text":"No advice slips found matching that search term."}}`
+
+func TestRandomSendsUserAgent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") == "" {
+		ua := r.Header.Get("User-Agent")
+		if ua == "" {
 			t.Error("request carried no User-Agent")
 		}
-		_, _ = w.Write([]byte("ok"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, mockRandomResponse)
 	}))
 	defer srv.Close()
 
-	c := NewClient()
-	c.Rate = 0 // no pacing in the test
-
-	body, err := c.Get(context.Background(), srv.URL)
+	c := newTestClient(srv)
+	_, err := c.Random(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "ok" {
-		t.Errorf("body = %q, want %q", body, "ok")
+}
+
+func TestRandomParsesSlip(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, mockRandomResponse)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	slip, err := c.Random(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slip.ID != 42 {
+		t.Errorf("slip.ID = %d, want 42", slip.ID)
+	}
+	if slip.Advice == "" {
+		t.Error("slip.Advice is empty")
+	}
+	if slip.Advice != "Do not take life too seriously. You will never get out of it alive." {
+		t.Errorf("slip.Advice = %q, unexpected", slip.Advice)
 	}
 }
 
-func TestGetRetriesOn503(t *testing.T) {
-	var hits int
+func TestSearchParsesSlips(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, mockSearchResponse)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	slips, err := c.Search(context.Background(), "positive", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slips) != 2 {
+		t.Fatalf("len(slips) = %d, want 2", len(slips))
+	}
+	if slips[0].ID != 1 {
+		t.Errorf("slips[0].ID = %d, want 1", slips[0].ID)
+	}
+	if slips[1].Advice != "Stay positive always." {
+		t.Errorf("slips[1].Advice = %q, unexpected", slips[1].Advice)
+	}
+}
+
+func TestSearchNoResultsReturnsEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, mockNoResultsResponse)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	slips, err := c.Search(context.Background(), "zzznomatch", 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(slips) != 0 {
+		t.Errorf("len(slips) = %d, want 0 (no-results must return empty slice)", len(slips))
+	}
+}
+
+func TestRetryOn503(t *testing.T) {
+	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
 		if hits < 3 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_, _ = w.Write([]byte("recovered"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, mockRandomResponse)
 	}))
 	defer srv.Close()
 
-	c := NewClient()
-	c.Rate = 0
-	c.Retries = 5
+	cfg := adviceslip.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	cfg.Rate = 0
+	cfg.Retries = 5
+	c := adviceslip.NewClient(cfg)
 
 	start := time.Now()
-	body, err := c.Get(context.Background(), srv.URL)
+	_, err := c.Random(context.Background())
 	if err != nil {
 		t.Fatal(err)
-	}
-	if string(body) != "recovered" {
-		t.Errorf("body = %q after retries", body)
 	}
 	if hits != 3 {
 		t.Errorf("server saw %d hits, want 3", hits)
