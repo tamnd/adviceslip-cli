@@ -20,6 +20,8 @@ func newTestClient(ts *httptest.Server) *adviceslip.Client {
 
 const mockRandomResponse = `{"slip":{"id":42,"advice":"Do not take life too seriously. You will never get out of it alive."}}`
 
+const mockGetResponse = `{"slip":{"id":91,"advice":"Drink a glass of water before meals."}}`
+
 const mockSearchResponse = `{"slips":[{"id":1,"advice":"Remember to be kind."},{"id":2,"advice":"Stay positive always."}]}`
 
 const mockNoResultsResponse = `{"message":{"type":"warning","text":"No advice slips found matching that search term."}}`
@@ -30,7 +32,7 @@ func TestRandomSendsUserAgent(t *testing.T) {
 		if ua == "" {
 			t.Error("request carried no User-Agent")
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, mockRandomResponse)
 	}))
 	defer srv.Close()
@@ -44,7 +46,8 @@ func TestRandomSendsUserAgent(t *testing.T) {
 
 func TestRandomParsesSlip(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		// API sends text/html even though it's JSON — must still decode correctly
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, mockRandomResponse)
 	}))
 	defer srv.Close()
@@ -57,17 +60,37 @@ func TestRandomParsesSlip(t *testing.T) {
 	if slip.ID != 42 {
 		t.Errorf("slip.ID = %d, want 42", slip.ID)
 	}
-	if slip.Advice == "" {
-		t.Error("slip.Advice is empty")
-	}
 	if slip.Advice != "Do not take life too seriously. You will never get out of it alive." {
+		t.Errorf("slip.Advice = %q, unexpected", slip.Advice)
+	}
+}
+
+func TestGetByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/advice/91" {
+			t.Errorf("path = %q, want /advice/91", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, mockGetResponse)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	slip, err := c.Get(context.Background(), 91)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slip.ID != 91 {
+		t.Errorf("slip.ID = %d, want 91", slip.ID)
+	}
+	if slip.Advice != "Drink a glass of water before meals." {
 		t.Errorf("slip.Advice = %q, unexpected", slip.Advice)
 	}
 }
 
 func TestSearchParsesSlips(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, mockSearchResponse)
 	}))
 	defer srv.Close()
@@ -90,7 +113,7 @@ func TestSearchParsesSlips(t *testing.T) {
 
 func TestSearchNoResultsReturnsEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, mockNoResultsResponse)
 	}))
 	defer srv.Close()
@@ -105,6 +128,24 @@ func TestSearchNoResultsReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestSearchLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, mockSearchResponse)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	// Ask for only 1 result from a 2-item response
+	slips, err := c.Search(context.Background(), "positive", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slips) != 1 {
+		t.Errorf("len(slips) = %d, want 1 (limit enforced)", len(slips))
+	}
+}
+
 func TestRetryOn503(t *testing.T) {
 	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +154,7 @@ func TestRetryOn503(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/html")
 		_, _ = fmt.Fprint(w, mockRandomResponse)
 	}))
 	defer srv.Close()

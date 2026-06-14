@@ -2,8 +2,8 @@
 // the HTTP client, request shaping, and typed data models for api.adviceslip.com.
 //
 // The Client sets a real User-Agent, paces requests, and retries transient
-// failures (429 and 5xx) with exponential backoff. Two operations are provided:
-// get a random advice slip and search for slips by keyword.
+// failures (429 and 5xx) with exponential backoff. Three operations are provided:
+// get a random advice slip, get a slip by ID, and search for slips by keyword.
 package adviceslip
 
 import (
@@ -67,7 +67,7 @@ type Slip struct {
 
 // internal response shapes
 
-type randomResponse struct {
+type slipResponse struct {
 	Slip *Slip `json:"slip"`
 }
 
@@ -87,9 +87,26 @@ func (c *Client) Random(ctx context.Context) (*Slip, error) {
 	if err != nil {
 		return nil, err
 	}
-	var resp randomResponse
+	var resp slipResponse
 	if err := json.Unmarshal(b, &resp); err != nil {
 		return nil, fmt.Errorf("decode random advice: %w", err)
+	}
+	if resp.Slip == nil {
+		return nil, fmt.Errorf("empty slip in response")
+	}
+	return resp.Slip, nil
+}
+
+// Get returns an advice slip by its numeric ID.
+func (c *Client) Get(ctx context.Context, id int) (*Slip, error) {
+	rawURL := fmt.Sprintf("%s/advice/%d", c.cfg.BaseURL, id)
+	b, err := c.get(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	var resp slipResponse
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("decode advice by id: %w", err)
 	}
 	if resp.Slip == nil {
 		return nil, fmt.Errorf("empty slip in response")
